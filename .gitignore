@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.pytest_cache/
+build/
+dist/
+
+# Your own recipes and app data live outside the repo
+/data/
+/my-recipes/
+migration-report.md
+.DS_Store

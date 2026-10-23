@@ -4,6 +4,7 @@
   show FILE [--plate 18:30 | --now] [--servings N]
                                 print a recipe with its timeline
   json FILE                     print the JSON the app serves
+  serve [--port 8000]           run the web app
 """
 
 from __future__ import annotations
@@ -11,11 +12,13 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import os
 import sys
 from pathlib import Path
 
 from . import units
 from .parse import parse_file
+from .scale import ingredient_text
 from .schedule import plan
 
 
@@ -81,21 +84,8 @@ def cmd_show(ns: argparse.Namespace) -> int:
             group = ing.group
             if group:
                 print(f"  {group}")
-        if ing.scales:
-            a, u = ing.amount * factor, ing.unit
-            if ing.amount_max is None and factor != 1:
-                a, u = units.readable(a, u)
-            amount = units.format_amount(a, u)
-            if ing.amount_max is not None:
-                amount += "-" + units.format_amount(ing.amount_max * factor, u)
-                a = ing.amount_max * factor
-            unit = f" {units.unit_label(u, a)}" if u else ""
-            line = f"{amount}{unit} {ing.display_name(a)}"
-        elif ing.amount is not None:
-            unit = f" {units.unit_label(ing.unit, ing.amount)}" if ing.unit else ""
-            line = f"{units.format_amount(ing.amount)}{unit} {ing.name}"
-        else:
-            line = ing.name if ing.parsed else (ing.raw or ing.name).lstrip("- ")
+        amount, name = ingredient_text(ing, factor)
+        line = f"{amount} {name}" if amount else name
         extras = [x for x in (ing.note, "pantry" if ing.pantry else None,
                               "optional" if ing.optional else None) if x]
         print(f"  - {line}" + (f"  ({'; '.join(extras)})" if extras else ""))
@@ -120,6 +110,13 @@ def cmd_json(ns: argparse.Namespace) -> int:
     return 0 if result.ok else 1
 
 
+def cmd_serve(ns: argparse.Namespace) -> int:
+    from .server import serve
+
+    serve(host=ns.host, port=ns.port, recipes=ns.recipes, data=ns.data)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="dogear", description="Dogear recipe tools")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -140,6 +137,13 @@ def main(argv: list[str] | None = None) -> int:
     j = sub.add_parser("json", help="print the recipe as the app's JSON")
     j.add_argument("file")
     j.set_defaults(func=cmd_json)
+
+    v = sub.add_parser("serve", help="run the web app")
+    v.add_argument("--host", default="0.0.0.0")
+    v.add_argument("--port", type=int, default=int(os.environ.get("DOGEAR_PORT", 8000)))
+    v.add_argument("--recipes", help="recipes folder (env DOGEAR_RECIPES, default ./recipes)")
+    v.add_argument("--data", help="data folder (env DOGEAR_DATA, default ./data)")
+    v.set_defaults(func=cmd_serve)
 
     ns = ap.parse_args(argv)
     return ns.func(ns)

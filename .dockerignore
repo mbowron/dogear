@@ -1,0 +1,11 @@
+.git
+.github
+**/__pycache__
+.pytest_cache
+.venv
+data
+my-recipes
+tests
+tools
+docs
+migration-report.md

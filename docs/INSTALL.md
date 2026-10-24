@@ -9,7 +9,9 @@ These steps are written for an Odroid running CoreELEC with the Docker add-on,
 where everything lives under `/storage`. On any other Linux box, swap
 `/storage/dogear` for a folder of your choice, or use `deploy/compose.yaml`.
 
-The image is built for 64-bit ARM and x86 (`linux/arm64`, `linux/amd64`).
+The image is built for 64-bit ARM, 32-bit ARM and x86 (`linux/arm64`,
+`linux/arm/v7`, `linux/amd64`). CoreELEC's Docker add-on is 32-bit even on
+64-bit boards, and Docker picks the right one automatically.
 
 ## 1. Folders
 

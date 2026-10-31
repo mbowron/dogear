@@ -82,6 +82,23 @@ seconds while the certificate is issued.
 On an iPad or iPhone, open that address in Safari and use **Share → Add to
 Home Screen** to get a full-screen app.
 
+## Syncing recipes from your computer
+
+If you keep and edit your recipes on another computer, `tools/sync-recipes.sh`
+copies them to the server. It checks every recipe first, shows what will
+change, asks before doing anything, and keeps a backup of the server's
+folder in `/storage/dogear/backups` (the last 10).
+
+```sh
+export DOGEAR_HOST=root@<odroid-ip>     # once, or put it in ~/.zshrc
+tools/sync-recipes.sh                   # recipes from ./my-recipes
+tools/sync-recipes.sh --delete          # also remove server recipes you deleted locally
+```
+
+Recipes that exist only on the server are kept unless you pass `--delete`.
+To skip the password prompt, add your SSH key once with
+`ssh-copy-id root@<odroid-ip>`.
+
 ## Updating
 
 ```sh

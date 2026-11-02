@@ -80,13 +80,27 @@ class _Collector:
 
 
 def parse_file(path: str | Path) -> ParseResult:
+    """Parse one file. A file that can't be read becomes an error, not an exception."""
     path = Path(path)
-    return parse_recipe(path.read_text(encoding="utf-8"), path.stem)
+    try:
+        text = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        return ParseResult(None, [Issue("error", "the file is not UTF-8 text")])
+    except OSError as exc:
+        return ParseResult(None, [Issue("error", f"the file can't be read ({exc.strerror or exc})")])
+    return parse_recipe(text, path.stem)
+
+
+def recipe_files(directory: str | Path) -> list[Path]:
+    """The recipe files in a folder: top-level *.md, skipping hidden files such
+    as the ._name.md copies macOS adds to archives."""
+    return sorted(p for p in Path(directory).glob("*.md")
+                  if not p.name.startswith(".") and p.is_file())
 
 
 def load_dir(directory: str | Path) -> dict[str, ParseResult]:
     """Parse every recipe in a folder, keyed by slug, in file name order."""
-    return {p.stem: parse_file(p) for p in sorted(Path(directory).glob("*.md"))}
+    return {p.stem: parse_file(p) for p in recipe_files(directory)}
 
 
 def parse_recipe(text: str, slug: str) -> ParseResult:

@@ -146,7 +146,8 @@ remote "mkdir -p '$backups' && cd '$REMOTE_DIR' && tar -czf '$backups/recipes-$s
 
 if [ -s "$WORK/upload" ]; then
   # tar keeps it to one connection and works without rsync on the server.
-  tar -cf - $(cat "$WORK/upload") | remote "cd '$REMOTE_DIR' && tar -xf - && chown $OWNER $(tr '\n' ' ' < "$WORK/upload")" \
+  # COPYFILE_DISABLE stops macOS tar from adding hidden ._name.md copies.
+  COPYFILE_DISABLE=1 tar -cf - $(cat "$WORK/upload") | remote "cd '$REMOTE_DIR' && tar -xf - && rm -f ._*.md && chown $OWNER $(tr '\n' ' ' < "$WORK/upload")" \
     || die "upload failed; the previous recipes are in $backups/recipes-$stamp.tar.gz"
 fi
 

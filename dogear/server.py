@@ -25,7 +25,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 from . import __version__
-from .parse import ParseResult, parse_file
+from .parse import ParseResult, parse_file, recipe_files
 from .scale import scaled_view
 from .store import Store
 
@@ -56,8 +56,11 @@ class Library:
     def scan(self) -> dict[str, ParseResult]:
         with self._lock:
             seen: dict[str, _Entry] = {}
-            for path in sorted(self.folder.glob("*.md")):
-                st = path.stat()
+            for path in recipe_files(self.folder):
+                try:
+                    st = path.stat()
+                except OSError:
+                    continue
                 old = self._cache.get(path.stem)
                 if old and old.mtime_ns == st.st_mtime_ns and old.size == st.st_size:
                     seen[path.stem] = old

@@ -17,7 +17,7 @@ import sys
 from pathlib import Path
 
 from . import units
-from .parse import parse_file
+from .parse import parse_file, recipe_files
 from .scale import ingredient_text
 from .schedule import plan
 
@@ -26,7 +26,7 @@ def _paths(args: list[str]) -> list[Path]:
     targets = [Path(a) for a in args] or [Path("recipes")]
     files: list[Path] = []
     for t in targets:
-        files += sorted(t.glob("*.md")) if t.is_dir() else [t]
+        files += recipe_files(t) if t.is_dir() else [t]
     return files
 
 

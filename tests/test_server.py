@@ -104,3 +104,15 @@ def test_images_stay_in_their_folder(client):
     (client.recipes / "images" / "a.jpg").write_bytes(b"\xff\xd8\xff")
     assert client.get("/api/images/a.jpg").status_code == 200
     assert client.get("/api/images/..%2Fgarlicky-green-beans.md").status_code == 404
+
+
+def test_hidden_and_unreadable_files_do_not_break_the_box(client):
+    # macOS tar adds ._name.md AppleDouble files: binary, and often unreadable.
+    (client.recipes / "._garlicky-green-beans.md").write_bytes(b"\x00\x05\x16\x07\xff\xfe")
+    (client.recipes / "not-text.md").write_bytes(b"\xff\xfe\x00binary")
+    assert client.get("/api/health").status_code == 200
+    cards = {c["slug"]: c for c in client.get("/api/recipes").json()["recipes"]}
+    assert "._garlicky-green-beans" not in cards
+    assert cards["not-text"]["ok"] is False
+    body = client.get("/api/recipes/not-text").json()
+    assert "UTF-8" in body["issues"][0]["message"]

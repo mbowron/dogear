@@ -1,6 +1,9 @@
-// Cook mode: what needs your hands now, running timers, what's next, and
-// every step. Progress is saved in localStorage so a reload or a locked
-// screen picks up where you left off.
+// Cook mode: the ingredients, every step, and the running timers on one
+// screen, under a timeline of the whole cook. Progress is saved in
+// localStorage so a reload or a locked screen picks up where you left off.
+//
+// Built around a list of dishes so a meal (several recipes on one plate
+// time) can use the same screen; today a cook has one dish.
 
 import { h, fill, icon, inline } from "../dom.js";
 import { api } from "../api.js";
@@ -10,15 +13,26 @@ import { unlock, ring, silence, stayAwake } from "../alarm.js";
 import { setTitle } from "./common.js";
 import { navigate } from "../app.js";
 
+const SESSION_VERSION = 2;
 const DUE_SOON_MS = 30 * 1000;
 const STALE_MS = 12 * 3600 * 1000;
+const PANEL_KEY = "dogear.cook.ingredients";
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+// Each dish in a cook owns one color, used everywhere that dish appears.
+const DISH_COLORS = [
+  { c: "#C95F40", ink: "#FFFFFF" },   // terracotta
+  { c: "#E9AA42", ink: "#1A1D19" },   // mustard
+  { c: "#7C9A86", ink: "#10261F" },   // sage, lifted for the dark band
+  { c: "#B9851F", ink: "#FFFFFF" },
+];
 
 export function sessionKey(slug) { return `dogear.cook.${slug}`; }
 
 export function savedSession(slug) {
   try {
     const s = JSON.parse(localStorage.getItem(sessionKey(slug)));
-    if (s && s.v === 1 && s.plate > Date.now() - STALE_MS) return s;
+    if (s && s.v === SESSION_VERSION && s.plate > Date.now() - STALE_MS) return s;
   } catch { /* none */ }
   return null;
 }
@@ -28,323 +42,338 @@ export async function mount(root, [slug], query) {
   let session = query.get("restart") ? null : savedSession(slug);
   if (session && hasPlan && !query.get("resume")) session = null;
 
-  const servingsWanted = session ? session.servings : query.get("servings");
-  const data = await api.recipe(slug, servingsWanted);
+  const data = await api.recipe(slug, session ? session.servings : query.get("servings"));
   const recipe = data.recipe;
   if (!recipe) { navigate(`/r/${slug}`, { replace: true }); return; }
   setTitle(recipe.title);
 
   if (!session) {
     const plan = readPlan(recipe, query);
-    session = { v: 1, slug, plate: plan.plate.getTime(), servings: data.view.servings, steps: {} };
+    session = { v: SESSION_VERSION, slug, plate: plan.plate.getTime(), servings: data.view.servings, steps: {}, have: {} };
   }
+  session.have = session.have || {};
   const save = () => { try { localStorage.setItem(sessionKey(slug), JSON.stringify(session)); } catch { /* full */ } };
   save();
   history.replaceState(null, "", `/cook/${slug}`);
-
-  document.body.className = "night";
+  document.body.className = "";
   stayAwake(true);
 
+  // -- the cook: dishes, their steps on one clock, their ingredients ----------
   const plate = new Date(session.plate);
-  const steps = timedSteps(recipe, plate).map((s) => ({ ...s, id: s.number }));
-  let open = null; // step number expanded in the list
+  const dishes = [{ recipe, view: data.view }].map((d, i) => ({
+    index: i, title: d.recipe.title, color: DISH_COLORS[i % DISH_COLORS.length],
+    ingredients: d.view.ingredients.map((ing, j) => ({ ...ing, key: `${i}:${j}` })),
+    steps: timedSteps(d.recipe, plate),
+  }));
+  const steps = dishes
+    .flatMap((d) => d.steps.map((s) => ({ ...s, id: `${d.index}:${s.number}`, dish: d })))
+    .sort((a, b) => a.start - b.start || a.dish.index - b.dish.index || a.number - b.number);
+  for (const s of steps) s.uses = ingredientsUsed(s, s.dish.ingredients);
 
-  // -- state helpers --------------------------------------------------------
-  const st = (s) => session.steps[s.number] || { status: "pending" };
+  let panelOpen = loadPanelPref();
+  let lastCurrent = null;
+
+  // -- step state -------------------------------------------------------------
+  const st = (s) => session.steps[s.id] || { status: "pending" };
   const alt = (s) => (st(s).alt != null ? s.fallbacks[st(s).alt] : null);
   const timerOf = (s) => {
     const a = alt(s);
-    if (a) return a.durationMinS || a.durationS || s.timerS;
-    return s.timerS;
+    return a ? a.durationMinS || a.durationS || s.timerS : s.timerS;
   };
-  // Short hands-on steps are just done; everything else gets a timer.
+  // Short hands-on steps are simply done; everything else gets a timer.
   const needsTimer = (s) => Boolean(timerOf(s)) && (s.mode !== "active" || timerOf(s) >= 120);
   const appOf = (s) => applianceLabel(alt(s) ? alt(s).appliance : s.appliance);
   const durOf = (s) => (alt(s) ? durationLabel(alt(s)) : durationLabel(s));
+  const set = (s, patch) => { session.steps[s.id] = { ...st(s), ...patch }; commit(); };
 
   function start(s) {
     unlock();
     const t = needsTimer(s) ? timerOf(s) : null;
-    if (!t) {
-      session.steps[s.number] = { ...st(s), status: "done", doneAt: Date.now() };
-    } else {
-      session.steps[s.number] = { ...st(s), status: "running", startedAt: Date.now(),
-        endsAt: t ? Date.now() + t * 1000 : null };
-    }
-    commit();
+    if (t) set(s, { status: "running", startedAt: Date.now(), endsAt: Date.now() + t * 1000 });
+    else set(s, { status: "done", doneAt: Date.now() });
   }
-  function done(s) {
-    session.steps[s.number] = { ...st(s), status: "done", doneAt: Date.now() };
-    commit();
-  }
+  const done = (s) => set(s, { status: "done", doneAt: Date.now() });
   function undo(s) {
-    const { alt: a } = st(s);
-    session.steps[s.number] = a != null ? { status: "pending", alt: a } : { status: "pending" };
+    const a = st(s).alt;
+    session.steps[s.id] = a != null ? { status: "pending", alt: a } : { status: "pending" };
     commit();
   }
   function addMinute(s) {
     const cur = st(s);
-    const base = Math.max(cur.endsAt || Date.now(), Date.now());
-    session.steps[s.number] = { ...cur, endsAt: base + MIN * 1000 };
-    commit();
+    set(s, { endsAt: Math.max(cur.endsAt || Date.now(), Date.now()) + MIN * 1000 });
   }
-  function useAlt(s, index) {
-    session.steps[s.number] = { ...st(s), alt: st(s).alt === index ? null : index };
-    commit();
-  }
+  const useAlt = (s, i) => set(s, { alt: st(s).alt === i ? null : i });
   function commit() {
     save();
     if (!ringingSteps().length) silence();
     render();
   }
 
-  // -- derived lists --------------------------------------------------------
+  // -- what is happening ------------------------------------------------------
   const now = () => Date.now();
-  const ringingSteps = () => steps.filter((s) => st(s).status === "running" && st(s).endsAt && st(s).endsAt <= now());
-  const pending = () => steps.filter((s) => st(s).status === "pending");
-  function view() {
+  const isRinging = (s) => st(s).status === "running" && st(s).endsAt && st(s).endsAt <= now();
+  const ringingSteps = () => steps.filter(isRinging);
+
+  /** The one step that needs you most, and why. */
+  function current() {
     const t = now();
     const ringing = ringingSteps();
-    const runActive = steps.filter((s) => st(s).status === "running" && s.mode === "active" && !ringing.includes(s));
-    const runPassive = steps.filter((s) => st(s).status === "running" && s.mode !== "active" && !ringing.includes(s));
-    const waiting = pending();
-    let due = waiting.filter((s) => s.start.getTime() <= t + DUE_SOON_MS);
-    let next = [];
-    if (!ringing.length && !runActive.length && !due.length && waiting.length) {
-      const first = waiting[0].start.getTime();
-      next = waiting.filter((s) => s.start.getTime() === first);
-    }
-    // Don't pile every overdue step into Now: the first two are enough.
-    if (due.length > 2) due = due.slice(0, 2);
-    const shown = new Set([...due, ...next].map((s) => s.number));
-    const coming = waiting.filter((s) => !shown.has(s.number)).slice(0, 3);
-    const lateMs = waiting.length ? Math.max(0, t - waiting[0].start.getTime()) : 0;
-    return { ringing, runActive, runPassive, due, next, coming, lateMs, allDone: !waiting.length && !runActive.length && !runPassive.length && !ringing.length };
+    if (ringing.length) return { step: ringing[0], kind: "ring" };
+    const active = steps.find((s) => st(s).status === "running" && s.mode === "active" && !isRinging(s));
+    if (active) return { step: active, kind: "active" };
+    const waiting = steps.filter((s) => st(s).status === "pending");
+    if (!waiting.length) return null;
+    const due = waiting.find((s) => s.start.getTime() <= t + DUE_SOON_MS);
+    return due ? { step: due, kind: "due" } : { step: waiting[0], kind: "next" };
   }
 
-  // -- rendering ------------------------------------------------------------
+  function lateMs() {
+    const first = steps.find((s) => st(s).status === "pending");
+    return first ? Math.max(0, now() - first.start.getTime()) : 0;
+  }
+
+  // -- rendering ----------------------------------------------------------------
   const page = h("div", { class: "cook" });
   root.append(page);
   let signature = "";
 
+  function sig() {
+    const cur = current();
+    const late = lateMs() > MIN * 1000 ? Math.floor(lateMs() / MIN / 1000) : 0;
+    return [cur && cur.step.id, cur && cur.kind, ringingSteps().map((s) => s.id).join(","), late].join("|");
+  }
+
   function render() {
-    const v = view();
-    signature = sig(v);
-    const doneCount = steps.filter((s) => st(s).status === "done").length;
-    const late = v.lateMs > MIN * 1000;
-    const projected = new Date(plate.getTime() + (late ? v.lateMs : 0));
-
-    const head = h("header", { class: "cook-head" },
-      h("a", { class: "x", href: `/r/${slug}`, "aria-label": "Leave cook mode" }, icon("close", 20, { stroke: 2.2 })),
-      h("div", { class: "title" },
-        h("div", { class: "name" }, recipe.title),
-        h("div", { class: "sub num" }, `${data.view.yieldLabel} · ${doneCount} of ${steps.length} done`)),
-      h("div", { class: "now" }, h("div", { class: "t num", dataset: { clock: "1" } }, clock(new Date()))),
-      h("div", { class: `plate-pill${late ? " late" : ""}` },
-        h("div", { class: "k" }, late ? `${human(v.lateMs)} late` : "Plate at"),
-        h("div", { class: "v num" }, clock(projected))));
-
-    const nowCards = [
-      ...v.ringing.map((s) => nowCard(s, "ring")),
-      ...v.runActive.map((s) => nowCard(s, "active")),
-      ...v.due.map((s) => nowCard(s, "due")),
-      ...v.next.map((s) => nowCard(s, "next")),
-    ];
-
-    const main = h("div", { class: "cook-col main" },
-      h("section", { "aria-labelledby": "now-h" },
-        h("h2", { id: "now-h", class: "eyebrow" }, "Now"),
-        nowCards.length ? nowCards : finished(v)),
-      v.runPassive.length ? h("section", { "aria-labelledby": "run-h" },
-        h("h2", { id: "run-h", class: "eyebrow" }, "Running"),
-        h("div", { class: "timers" }, v.runPassive.map(timerCard))) : null,
-      v.coming.length ? h("section", { class: "hide-phone", "aria-labelledby": "next-h" },
-        h("h2", { id: "next-h", class: "eyebrow" }, "Coming up"),
-        h("div", { class: "upnext" }, v.coming.map((s) => h("div", {},
-          h("span", { class: "t num" }, clock(s.start)),
-          h("span", { class: "l" }, s.lead),
-          h("span", { class: "in num", dataset: { until: s.start.getTime() } }, until((s.start - now()) / 1000)))))) : null);
-
-    const side = h("div", { class: "cook-col side" }, everyStep(v));
-
-    const primary = nowCards.length ? primaryAction(v) : null;
-    fill(page, head, stripEl(), h("div", { class: "cook-body" }, main, side),
-      primary ? h("div", { class: "cook-foot" }, primary) : null);
+    signature = sig();
+    const cur = current();
+    const ingPanel = ingredientsPanel(cur);
+    fill(page,
+      header(),
+      timeline(cur),
+      h("div", { class: "ck-body" },
+        ingPanel,
+        panelOpen ? h("div", { class: "ck-scrim", onclick: () => togglePanel(false) }) : null,
+        stepList(cur),
+        timersPanel(cur)));
     tick(true);
-  }
-
-  function sig(v) {
-    const ids = (list) => list.map((s) => s.number).join(",");
-    return [ids(v.ringing), ids(v.due), ids(v.next), ids(v.coming), v.lateMs > MIN * 1000 ? Math.floor(v.lateMs / MIN / 1000) : 0].join("|");
-  }
-
-  function nowCard(s, kind) {
-    const state = st(s);
-    const app = appOf(s);
-    const dur = durOf(s);
-    const cls = kind === "ring" ? "now-card ring" : kind === "next" ? "now-card next" : "now-card";
-    let when;
-    if (kind === "ring") when = "Time’s up";
-    else if (kind === "next") when = `${clock(s.start)} · `;
-    else when = `${clock(s.start)}–${clock(s.end)}`;
-
-    const actions = [];
-    let bigLine = null;
-    if (kind === "ring") {
-      actions.push(h("button", { type: "button", class: "btn btn-pri", onclick: () => done(s) }, icon("check", 20, { stroke: 2.8 }), "Done"));
-      actions.push(h("button", { type: "button", class: "btn btn-sec", style: { "box-shadow": "inset 0 0 0 1.5px #1A1D19", color: "#1A1D19" }, onclick: () => addMinute(s) }, "+1 min"));
-    } else if (kind === "active") {
-      if (state.endsAt) bigLine = h("div", { class: "left" },
-        h("div", { class: "big num", dataset: { end: state.endsAt } }, `${countdown((state.endsAt - now()) / 1000)} left`));
-      actions.push(h("button", { type: "button", class: "btn btn-gold", onclick: () => done(s) }, icon("check", 20, { stroke: 2.8 }), "Done"));
-    } else {
-      const hasTime = needsTimer(s);
-      actions.push(h("button", { type: "button", class: "btn btn-gold", onclick: () => start(s) },
-        icon(hasTime ? "play" : "check", 20, { stroke: 2.8 }), hasTime ? "Start" : "Done"));
+    const id = cur ? cur.step.id : "plate";
+    if (id !== lastCurrent) {
+      lastCurrent = id;
+      requestAnimationFrame(() => page.querySelector(`[data-step="${id}"]`)?.scrollIntoView({ block: "start", behavior: "smooth" }));
     }
-
-    return h("div", { class: cls },
-      h("div", { class: "top" },
-        h("span", { class: "when num" }, when, kind === "next" ? h("span", { dataset: { until: s.start.getTime() } }, until((s.start - now()) / 1000)) : null),
-        h("span", { class: "eyebrow", style: { color: "inherit", opacity: ".8" } }, `Step ${s.number}`)),
-      h("div", { class: "lead" }, inline(s.lead)),
-      s.body ? h("div", { class: "body" }, inline(s.body)) : null,
-      dur || app ? h("div", { class: "pills" },
-        dur ? h("span", { class: "pill" }, `${dur} · ${s.mode === "active" ? "hands-on" : "hands-off"}`) : null,
-        app ? h("span", { class: "pill app" }, app) : null) : null,
-      kind !== "ring" && kind !== "active" && state.status === "pending" ? s.fallbacks.map((f, i) =>
-        h("div", { class: "alt" }, icon("swap", 16),
-          st(s).alt === i
-            ? [`Using ${applianceLabel(f.appliance)}`, h("button", { type: "button", class: "linkbtn", onclick: () => useAlt(s, i) }, `Back to ${applianceLabel(s.appliance)}`)]
-            : [`Or ${applianceLabel(f.appliance)}${f.durationS ? ` · ${durationLabel(f)}` : ""}`,
-               h("button", { type: "button", class: "linkbtn", onclick: () => useAlt(s, i) }, "Use it")])) : null,
-      h("div", { class: "foot" }, bigLine || h("div", { class: "left" }), actions));
   }
 
-  function timerCard(s) {
-    const state = st(s);
-    const label = s.lead.replace(/\.$/, "");
-    if (!state.endsAt) {
-      return h("div", { class: "tcard" },
-        h("div", { class: "t1" }, h("span", { class: "label" }, label)),
-        h("div", { class: "ends" }, `Since ${clock(new Date(state.startedAt))}`),
-        h("div", { class: "tb" }, h("button", { type: "button", class: "solid", onclick: () => done(s) }, "Done")));
-    }
-    const total = state.endsAt - state.startedAt;
-    return h("div", { class: "tcard" },
-      h("div", { class: "t1" }, h("span", { class: "label" }, label),
-        h("div", { class: "tb" },
-          h("button", { type: "button", onclick: () => addMinute(s), "aria-label": `Add a minute to ${label}` }, "+1 min"),
-          h("button", { type: "button", class: "solid", onclick: () => done(s) }, "Done"))),
-      h("div", { class: "left num", dataset: { end: state.endsAt } }, countdown((state.endsAt - now()) / 1000)),
-      h("div", { class: "bar" }, h("span", { dataset: { from: state.startedAt, to: state.endsAt }, style: { width: `${Math.min(100, ((now() - state.startedAt) / total) * 100)}%` } })),
-      h("div", { class: "ends num" }, `Ends ${clock(new Date(state.endsAt))}`));
+  function header() {
+    const late = lateMs() > MIN * 1000;
+    const shown = new Date(plate.getTime() + (late ? lateMs() : 0));
+    return h("header", { class: "ck-head" },
+      h("a", { class: "ck-x", href: `/r/${slug}`, "aria-label": "Leave cook mode" }, icon("close", 20, { stroke: 2.2 })),
+      h("button", { type: "button", class: "ck-tog", "aria-pressed": String(panelOpen), "aria-label": "Ingredients", onclick: () => togglePanel() },
+        listIcon(), h("span", { class: "lbl" }, "Ingredients")),
+      h("div", { class: "ck-title" }, dishes.map((d, i) => [i ? h("span", { class: "plus" }, " + ") : null, d.title])),
+      h("div", { class: "ck-clock num", dataset: { clock: "1" } }, clock(new Date())),
+      h("div", { class: `ck-plate${late ? " late" : ""}` },
+        h("div", { class: "k" }, late ? `${human(lateMs() / 1000)} late` : `Plate ${clock(plate, { ampm: false })}`),
+        h("div", { class: "v num", dataset: late ? {} : { until: plate.getTime() } },
+          late ? clock(shown) : until(Math.max(0, (plate - now()) / 1000)))));
   }
 
-  function finished(v) {
-    if (!v.allDone) return h("div", { class: "idle" }, h("div", { class: "h" }, "Waiting on the timers"));
-    return h("div", { class: "idle" },
-      h("div", { class: "h" }, "Plate it"),
-      h("div", { class: "row" },
-        h("button", { type: "button", class: "btn btn-gold", onclick: logDialog }, "Log this cook"),
-        h("button", { type: "button", class: "btn btn-sec", style: { color: "var(--cream)", "box-shadow": "inset 0 0 0 1.5px var(--cream)" }, onclick: finish }, "Close")));
-  }
-
-  function primaryAction(v) {
-    const s = v.ringing[0] || v.runActive[0] || v.due[0] || v.next[0];
-    if (!s) return null;
-    const running = st(s).status === "running";
-    const hasTime = needsTimer(s);
-    return h("button", {
-      type: "button", class: "btn btn-gold btn-lg", onclick: () => (running ? done(s) : start(s)),
-    }, running ? `Done · step ${s.number}` : hasTime ? `Start step ${s.number}` : `Done · step ${s.number}`);
-  }
-
-  function everyStep(v) {
-    const nowIds = new Set([...v.ringing, ...v.runActive, ...v.due].map((s) => s.number));
-    return h("section", { class: "all", "aria-labelledby": "all-h" },
-      h("div", { class: "h" }, h("h2", { id: "all-h" }, "Every step"),
-        h("span", { class: "num" }, `${steps.filter((s) => st(s).status === "done").length} of ${steps.length}`)),
-      h("ol", {}, steps.map((s) => {
-        const state = st(s);
-        const isDone = state.status === "done";
-        const isNow = nowIds.has(s.number);
-        const expanded = open === s.number;
-        const meta = [durOf(s), s.mode === "active" ? "hands-on" : "hands-off", appOf(s)].filter(Boolean).join(" · ");
-        let right = null;
-        if (isDone) right = icon("check", 18, { stroke: 3, label: "Done" });
-        else if (state.status === "running" && state.endsAt) right = h("span", { dataset: { end: state.endsAt } }, countdown((state.endsAt - now()) / 1000));
-        else if (state.status === "running") right = "On";
-        else if (isNow) right = "Now";
-        return h("li", {},
-          h("button", {
-            type: "button", class: `srow${isDone ? " done" : ""}${isNow || expanded ? " cur" : ""}`,
-            "aria-expanded": String(expanded),
-            onclick: () => { open = expanded ? null : s.number; render(); },
-          },
-            h("span", { class: "t num" }, clock(s.start)),
-            h("span", { class: "x" },
-              h("span", { class: "ld" }, inline(s.lead)),
-              h("span", { class: "md" }, meta),
-              s.body ? h("span", { class: "bd" }, inline(s.body)) : null),
-            h("span", { class: "r num" }, right)),
-          expanded ? h("div", { style: { display: "flex", gap: "8px", padding: "0 10px 10px 86px", "flex-wrap": "wrap" } },
-            state.status === "pending" ? h("button", { type: "button", class: "btn btn-gold btn-sm", onclick: () => { open = null; start(s); } }, "Start") : null,
-            state.status === "running" ? h("button", { type: "button", class: "btn btn-gold btn-sm", onclick: () => { open = null; done(s); } }, "Done") : null,
-            state.status !== "pending" ? h("button", { type: "button", class: "btn btn-sm", style: { background: "var(--night-4)", color: "var(--cream)" }, onclick: () => { open = null; undo(s); } }, "Undo") : null) : null);
-      })),
-      h("div", { class: "plate" }, h("span", { class: "t num" }, clock(plate)), "Plate"));
-  }
-
-  function stripEl() {
-    const items = steps.filter((s) => s.end > s.start);
-    if (!items.length) return null;
-    const t0 = Math.min(...items.map((s) => s.start.getTime()));
+  function timeline(cur) {
+    const t0 = Math.min(...steps.map((s) => s.start.getTime()));
     const t1 = plate.getTime();
     const span = Math.max(t1 - t0, MIN * 1000);
     const pct = (t) => `${Math.max(0, Math.min(100, ((t - t0) / span) * 100))}%`;
-    const rows = packRows(items, (s) => [s.start.getTime() / 1000, s.end.getTime() / 1000]);
     const stepMin = [5, 10, 15, 30, 60, 120, 240].find((m) => span / (m * 60000) <= 8) || 480;
     const ticks = [];
-    const first = Math.ceil(t0 / (stepMin * 60000)) * stepMin * 60000;
-    for (let t = first; t <= t1; t += stepMin * 60000) ticks.push(t);
-    return h("div", { class: "cook-strip", "aria-hidden": "true" },
-      h("div", { class: "ticks num" }, ticks.map((t) => h("span", { style: { left: pct(t) } }, clock(new Date(t), { ampm: false })))),
-      h("div", { class: "rows" },
-        rows.map((row) => h("div", { class: "row" }, row.map((s) =>
-          h("div", { class: `b ${s.mode === "active" ? "on" : "off"}${st(s).status === "done" ? " done" : ""}`, style: { left: pct(s.start.getTime()), width: `${((s.end - s.start) / span) * 100}%` } })))),
-        h("div", { class: "nowline", dataset: { t0, span }, style: { left: pct(now()), display: now() < t0 || now() > t1 ? "none" : "block" } })));
+    for (let t = Math.ceil(t0 / (stepMin * 60000)) * stepMin * 60000; t < t1 - stepMin * 30000; t += stepMin * 60000) ticks.push(t);
+    const laneW = dishes.length > 1 ? "112px" : "0px";
+
+    const lanes = dishes.map((d) => {
+      const mine = steps.filter((s) => s.dish === d && s.end > s.start);
+      const rows = packRows(mine, (s) => [s.start.getTime() / 1000, s.end.getTime() / 1000]);
+      return h("div", { class: "ck-lane" },
+        dishes.length > 1 ? h("div", { class: "name" }, h("span", { class: "dot", style: { width: "10px", height: "10px", "border-radius": "5px", background: d.color.c } }), h("span", {}, d.title)) : null,
+        h("div", { class: "track", style: { height: `${rows.length * 32 - 6}px` } },
+          rows.flatMap((row, r) => row.map((s) => {
+            const w = ((s.end - s.start) / span) * 100;
+            const state = cur && cur.step === s ? "cur" : st(s).status === "done" ? "done" : "";
+            return h("button", {
+              type: "button", class: `ck-blk ${state}`,
+              style: { left: pct(s.start.getTime()), width: `calc(${w}% - 2px)`, top: `${r * 32}px`, "--dish": d.color.c, "--dish-ink": d.color.ink },
+              title: `${clock(s.start)} · ${s.lead}`, "aria-label": `${clock(s.start)}, ${s.lead}`,
+              onclick: () => page.querySelector(`[data-step="${s.id}"]`)?.scrollIntoView({ block: "start", behavior: "smooth" }),
+            }, w > 7 ? shortName(s.lead) : "");
+          }))));
+    });
+
+    return h("section", { class: "ck-line", style: { "--lane-w": laneW }, "aria-label": "Timeline" },
+      h("div", { class: "ticks num", "aria-hidden": "true" },
+        ticks.map((t) => h("span", { style: { left: pct(t) } }, clock(new Date(t), { ampm: false }))),
+        h("span", { style: { left: "100%" } }, "Plate")),
+      h("div", { class: "lanes" }, lanes,
+        h("div", { class: "ck-needle", "aria-hidden": "true", dataset: { t0, span } },
+          h("div", { class: "bar" }), h("div", { class: "lbl num" }, clock(new Date(), { ampm: false })))));
   }
 
-  // -- the clock -------------------------------------------------------------
-  function tick(skipCheck = false) {
-    const t = now();
-    if (!skipCheck) {
-      const v = view();
-      if (sig(v) !== signature) { render(); return; }
+  function ingredientsPanel(cur) {
+    const using = new Set(cur ? cur.step.uses : []);
+    const groups = [];
+    for (const d of dishes) {
+      let group = null;
+      for (const ing of d.ingredients) {
+        const title = [dishes.length > 1 ? d.title : null, ing.group].filter(Boolean).join(" · ") || (dishes.length > 1 ? d.title : "");
+        if (!group || group.title !== title) { group = { title, dish: d, items: [] }; groups.push(group); }
+        group.items.push(ing);
+      }
     }
+    return h("aside", { class: "ck-ing ck-scroll", hidden: !panelOpen, "aria-label": "Ingredients" },
+      groups.map((g) => h("section", { class: "ck-grp", style: { "--dish": g.dish.color.c } },
+        g.title ? h("h3", {}, dishes.length > 1 ? h("span", { class: "dot" }) : null, g.title) : null,
+        g.items.map((ing) => h("button", {
+          type: "button", class: `ck-item${using.has(ing.key) ? " use" : ""}`, "aria-pressed": String(Boolean(session.have[ing.key])),
+          onclick: () => { session.have[ing.key] = !session.have[ing.key]; save(); render(); },
+        },
+          h("span", { class: "bx", "aria-hidden": "true" }, icon("check", 11, { stroke: 3.6 })),
+          h("span", { class: "amt num" }, ing.amount),
+          h("span", { class: "nm" }, ing.name, ing.note ? h("span", { class: "note" }, ` (${ing.note})`) : null))))));
+  }
+
+  function stepList(cur) {
+    const nextPending = steps.find((s) => st(s).status === "pending" && (!cur || s !== cur.step));
+    const allDone = steps.every((s) => st(s).status === "done");
+    const items = [];
+    for (const s of steps) items.push(stepRow(s, cur, nextPending));
+    items.push(allDone ? finishRow() : h("li", { class: "ck-plate-row", "data-step": "plate" },
+      h("span", { class: "when num" }, clock(plate)), h("span", { class: "serif" }, "Plate")));
+    return h("ol", { class: "ck-steps ck-scroll", "aria-label": "Steps" }, items);
+  }
+
+  function stepRow(s, cur, nextPending) {
+    const state = st(s);
+    const isCur = Boolean(cur && cur.step === s);
+    const isDone = state.status === "done";
+    const app = appOf(s);
+    const meta = [dishes.length > 1 ? s.dish.title : null, durOf(s), s.mode === "active" ? "hands-on" : "hands-off", app].filter(Boolean).join(" · ");
+    return h("li", {
+      class: `ck-step${isCur ? " cur" : ""}${isDone && !isCur ? " done" : ""}`,
+      "data-step": s.id, style: { "--dish": s.dish.color.c },
+      "aria-current": isCur ? "step" : null,
+    },
+      h("button", {
+        type: "button", class: "ck", "aria-pressed": String(isDone),
+        "aria-label": `${isDone ? "Mark not done" : "Mark done"}: ${s.lead}`,
+        onclick: () => (isDone ? undo(s) : done(s)),
+      }, icon("check", 15, { stroke: 3.2 })),
+      h("div", { class: "when num" },
+        h("span", {}, clock(s.start, { ampm: false })),
+        s === nextPending && s.start.getTime() > now() ? h("span", { class: "soon", dataset: { until: s.start.getTime() } }, until(Math.max(0, (s.start - now()) / 1000))) : null),
+      h("div", { class: "main" },
+        h("div", { class: "meta" },
+          isCur ? h("span", { class: "ck-now" }, cur.kind === "next" ? "Next" : "Now") : null,
+          dishes.length > 1 ? h("span", { class: "dot" }) : null,
+          meta),
+        h("div", { class: "txt" }, h("span", { class: "lead" }, inline(s.lead)), s.body ? " " : null, inline(s.body)),
+        isCur && state.status === "pending" ? s.fallbacks.map((f, i) => h("div", { class: "alt" }, icon("swap", 16),
+          state.alt === i
+            ? [`Using ${applianceLabel(f.appliance)}`, h("button", { type: "button", class: "linkbtn", onclick: () => useAlt(s, i) }, `Back to ${applianceLabel(s.appliance)}`)]
+            : [`Or ${applianceLabel(f.appliance)}${f.durationS ? ` · ${durationLabel(f)}` : ""}`, h("button", { type: "button", class: "linkbtn", onclick: () => useAlt(s, i) }, "Use it")])) : null,
+        isCur && !panelOpen && s.uses.length ? h("div", { class: "ck-chips" }, s.uses.map((key) => {
+          const ing = s.dish.ingredients.find((x) => x.key === key);
+          return h("span", { class: "ck-chip" }, ing.amount ? h("b", { class: "num" }, ing.amount) : null, ing.name);
+        })) : null,
+        isCur ? actionBar(cur) : null));
+  }
+
+  function actionBar(cur) {
+    const s = cur.step;
+    const state = st(s);
+    let big, small, label, act;
+    if (cur.kind === "ring") {
+      big = "Time’s up"; small = `${s.lead.replace(/\.$/, "")} is done`; label = "Done"; act = () => done(s);
+    } else if (cur.kind === "active") {
+      big = h("span", { dataset: { end: state.endsAt, suffix: " left" } }, `${countdown((state.endsAt - now()) / 1000)} left`);
+      small = `Done by ${clock(new Date(state.endsAt))}`; label = "Done"; act = () => done(s);
+    } else {
+      const timed = needsTimer(s);
+      if (cur.kind === "next") {
+        big = h("span", { dataset: { until: s.start.getTime() } }, until(Math.max(0, (s.start - now()) / 1000)));
+        small = `Starts at ${clock(s.start)}`;
+      } else {
+        big = timed ? countdown(timerOf(s)) : "";
+        small = timed ? `${s.mode === "active" ? "Timer" : "Runs on its own"} once you start` : "";
+      }
+      label = timed ? "Start" : "Done";
+      act = () => start(s);
+    }
+    return h("div", { class: "ck-act" },
+      h("div", { class: "grow" }, big ? h("div", { class: "big num" }, big) : null, small ? h("div", { class: "small num" }, small) : null),
+      h("button", { type: "button", class: "btn btn-pri", onclick: act }, label));
+  }
+
+  function timersPanel(cur) {
+    const running = steps.filter((s) => st(s).status === "running" && st(s).endsAt && !(cur && cur.step === s));
+    return h("aside", { class: `ck-timers ck-scroll${running.length ? "" : " none"}`, "aria-label": "Timers" },
+      running.length ? running.map(timerTile) : h("div", { class: "empty" }, "No timers running"));
+  }
+
+  function timerTile(s) {
+    const state = st(s);
+    const ringingNow = isRinging(s);
+    return h("div", { class: `ck-tmr${ringingNow ? " ring" : ""}`, style: { "--dish": s.dish.color.c } },
+      ringSvg(s.dish.color.c, state.startedAt, state.endsAt),
+      h("div", { class: "info" },
+        h("div", { class: "name" }, s.lead.replace(/\.$/, "")),
+        h("div", { class: "left num", dataset: { end: state.endsAt, done: "Time’s up" } }, ringingNow ? "Time’s up" : countdown((state.endsAt - now()) / 1000)),
+        h("div", { class: "sub num" }, `Ends ${clock(new Date(state.endsAt))}`)),
+      h("div", { class: "acts" },
+        h("button", { type: "button", onclick: () => addMinute(s) }, "+1 min"),
+        ringingNow ? h("button", { type: "button", class: "solid", onclick: () => done(s) }, "Done") : null));
+  }
+
+  function finishRow() {
+    return h("li", { class: "ck-step cur", "data-step": "plate", style: { "--dish": "var(--sage)" } },
+      h("div", { class: "main" },
+        h("div", { class: "txt" }, h("span", { class: "lead" }, "Plate it.")),
+        h("div", { class: "ck-act" },
+          h("div", { class: "grow" }),
+          h("button", { type: "button", class: "btn btn-sec", onclick: finish }, "Close"),
+          h("button", { type: "button", class: "btn btn-pri", onclick: logDialog }, "Log this cook"))));
+  }
+
+  // -- the clock ------------------------------------------------------------------
+  function tick(skipCheck = false) {
+    if (!skipCheck && sig() !== signature) { render(); return; }
+    const t = now();
     for (const el of page.querySelectorAll("[data-end]")) {
       const left = (Number(el.dataset.end) - t) / 1000;
-      el.textContent = el.classList.contains("big") ? `${countdown(left)} left` : countdown(left);
+      el.textContent = left <= 0 && el.dataset.done ? el.dataset.done : countdown(left) + (el.dataset.suffix || "");
     }
     for (const el of page.querySelectorAll("[data-until]")) el.textContent = until(Math.max(0, (Number(el.dataset.until) - t) / 1000));
-    for (const el of page.querySelectorAll("[data-from]")) {
-      const from = Number(el.dataset.from), end = Number(el.dataset.to);
-      el.style.width = `${Math.min(100, ((t - from) / (end - from)) * 100)}%`;
+    for (const el of page.querySelectorAll("[data-ring]")) {
+      const [from, to] = el.dataset.ring.split(",").map(Number);
+      el.setAttribute("stroke-dashoffset", String(RING_C * Math.max(0, Math.min(1, (to - t) / (to - from)))));
     }
     const c = page.querySelector("[data-clock]");
     if (c) c.textContent = clock(new Date(t));
-    const line = page.querySelector(".nowline");
-    if (line) {
-      const t0 = Number(line.dataset.t0), span = Number(line.dataset.span);
-      line.style.left = `${Math.max(0, Math.min(100, ((t - t0) / span) * 100))}%`;
-      line.style.display = t < t0 || t > t0 + span ? "none" : "block";
+    const needle = page.querySelector(".ck-needle");
+    if (needle) {
+      const t0 = Number(needle.dataset.t0), span = Number(needle.dataset.span);
+      const left = `${Math.max(0, Math.min(100, ((t - t0) / span) * 100))}%`;
+      needle.style.display = t < t0 || t > t0 + span ? "none" : "";
+      for (const el of needle.children) el.style.left = left;
+      needle.lastChild.textContent = clock(new Date(t), { ampm: false });
     }
     const ringingNow = ringingSteps();
     if (ringingNow.length) ring(ringingNow.map((s) => s.lead).join(" · "));
   }
 
-  // -- finishing ---------------------------------------------------------------
+  // -- panel, finishing ------------------------------------------------------------
+  function togglePanel(open = !panelOpen) {
+    panelOpen = open;
+    try { localStorage.setItem(PANEL_KEY, open ? "1" : "0"); } catch { /* private mode */ }
+    render();
+  }
+
   function finish() {
     try { localStorage.removeItem(sessionKey(slug)); } catch { /* ignore */ }
     navigate(`/r/${slug}`);
@@ -384,4 +413,94 @@ export async function mount(root, [slug], query) {
     silence();
     document.querySelector(".dialog-backdrop")?.remove();
   };
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+const RING_C = 163.36; // circumference for r = 26
+
+function ringSvg(color, from, to) {
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("width", "52"); svg.setAttribute("height", "52");
+  svg.setAttribute("viewBox", "0 0 64 64"); svg.setAttribute("aria-hidden", "true");
+  const base = { cx: 32, cy: 32, r: 26, fill: "none", "stroke-width": 6 };
+  const track = document.createElementNS(SVG_NS, "circle");
+  for (const [k, v] of Object.entries({ ...base, stroke: "#EFE6D2" })) track.setAttribute(k, v);
+  const arc = document.createElementNS(SVG_NS, "circle");
+  const left = Math.max(0, Math.min(1, (to - Date.now()) / (to - from)));
+  for (const [k, v] of Object.entries({
+    ...base, stroke: color, "stroke-linecap": "round", "stroke-dasharray": RING_C,
+    "stroke-dashoffset": RING_C * left, transform: "rotate(-90 32 32)", "data-ring": `${from},${to}`,
+  })) arc.setAttribute(k, v);
+  svg.append(track, arc);
+  return svg;
+}
+
+function listIcon() {
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("width", "18"); svg.setAttribute("height", "18"); svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("aria-hidden", "true"); svg.setAttribute("fill", "none"); svg.setAttribute("stroke", "currentColor");
+  svg.setAttribute("stroke-width", "2"); svg.setAttribute("stroke-linecap", "round");
+  const p = document.createElementNS(SVG_NS, "path");
+  p.setAttribute("d", "M9 6h11M9 12h11M9 18h11M4.5 6h.01M4.5 12h.01M4.5 18h.01");
+  svg.append(p);
+  return svg;
+}
+
+function loadPanelPref() {
+  try {
+    const v = localStorage.getItem(PANEL_KEY);
+    if (v !== null) return v === "1";
+  } catch { /* private mode */ }
+  return window.matchMedia("(min-width: 900px)").matches;
+}
+
+/** "Heat the oven to 400°F." -> "Heat the oven" for a timeline block. */
+function shortName(lead) {
+  const text = lead.replace(/[.*_`]/g, "").trim();
+  const words = text.split(/\s+/);
+  return words.length <= 3 ? text : words.slice(0, 3).join(" ");
+}
+
+const SKIP = new Set(["fresh", "large", "small", "medium", "whole", "ground", "dried", "chopped", "sliced", "minced", "unsalted", "salted", "extra", "virgin", "kosher", "black", "white", "dry", "light", "dark", "boneless", "skinless", "the", "and", "for"]);
+
+/**
+ * Which ingredients a step mentions, so the panel can light them up.
+ * A full name match wins; otherwise the head noun ("potatoes") is used,
+ * unless several ingredients share it ("salt") and none is named in full.
+ */
+function ingredientsUsed(step, ingredients) {
+  const text = ` ${`${step.lead} ${step.body || ""}`.toLowerCase().replace(/[^a-z0-9 ]+/g, " ").replace(/\s+/g, " ")} `;
+  const has = (w) => w && text.includes(` ${w} `);
+  const variants = (w) => [w, w.endsWith("es") ? w.slice(0, -2) : null, w.endsWith("s") ? w.slice(0, -1) : `${w}s`];
+  const full = [];
+  const byHead = new Map();
+  for (const ing of ingredients) {
+    const words = (ing.item || ing.name || "").toLowerCase().replace(/[^a-z0-9 ]+/g, " ").split(/\s+/).filter(Boolean);
+    if (!words.length) continue;
+    if (words.length > 1 && has(words.join(" "))) { full.push(ing.key); continue; }
+    const head = words[words.length - 1];
+    if (SKIP.has(head) || head.length < 3) continue;
+    if (variants(head).some(has)) {
+      if (!byHead.has(head)) byHead.set(head, []);
+      byHead.get(head).push(ing.key);
+    }
+  }
+  const out = new Set(full);
+  const noteHits = (key) => {
+    const ing = ingredients.find((x) => x.key === key);
+    const words = (ing.note || "").toLowerCase().replace(/[^a-z0-9 ]+/g, " ").split(/\s+/)
+      .filter((w) => w.length > 3 && !SKIP.has(w));
+    return words.some((w) => variants(w).some(has));
+  };
+  for (const keys of byHead.values()) {
+    if (keys.some((k) => out.has(k))) continue;
+    if (keys.length === 1) { out.add(keys[0]); continue; }
+    // "salt" with kosher and sea salt: the one "for the onions" wins in the onion step.
+    const hinted = keys.filter(noteHits);
+    if (hinted.length) hinted.forEach((k) => out.add(k));
+  }
+  return [...out];
 }

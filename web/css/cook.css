@@ -104,7 +104,7 @@
 .ck-step .when { flex: 0 0 64px; display: flex; flex-direction: column; gap: 2px; padding-top: 4px; font-size: 14px; font-weight: 600; color: var(--quiet); }
 .ck-step .soon { font-size: 12px; color: var(--forest); }
 .ck-step .main { flex: 1; min-width: 0; }
-.ck-step .meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 4px; font-size: 12.5px; font-weight: 600; color: var(--quiet); }
+.ck-step .meta { display: flex; align-items: center; gap: 6px 8px; flex-wrap: wrap; height: auto; min-height: 22px; padding: 0; border-radius: 0; margin-bottom: 4px; font-size: 12.5px; font-weight: 600; color: var(--quiet); }
 .ck-step .meta .dot { width: 8px; height: 8px; border-radius: 4px; background: var(--dish); }
 .ck-step .txt { font-size: 16.5px; line-height: 1.5; color: var(--charcoal); }
 .ck-step .lead { font-weight: 650; color: var(--forest); }
@@ -132,7 +132,7 @@
 .ck-act { display: flex; align-items: center; gap: 16px; margin-top: 16px; flex-wrap: wrap; }
 .ck-act .big { font: 400 34px/1.1 var(--serif); color: var(--forest); }
 .ck-act .small { font-size: 13.5px; color: var(--quiet); }
-.ck-act .grow { flex: 1; min-width: 0; }
+.ck-act .grow { flex: 1 1 150px; min-width: 0; }
 .ck-act .btn { min-width: 160px; min-height: 56px; font-size: 17px; border-radius: 16px; }
 .ck-plate-row { display: flex; gap: 14px; align-items: center; padding: 14px 16px; color: var(--terra-dark); }
 .ck-plate-row .when { flex: 0 0 64px; margin-left: 44px; font-weight: 600; font-size: 14px; }
@@ -160,6 +160,16 @@
 .ck-tmr.ring { border-color: var(--sage); box-shadow: 0 0 0 2px var(--sage); animation: ck-pulse 1.2s ease-in-out infinite; }
 @keyframes ck-pulse { 50% { box-shadow: 0 0 0 6px rgba(82, 107, 86, .35); } }
 
+.ck-toast {
+  position: fixed; z-index: 30; left: 50%; bottom: calc(24px + env(safe-area-inset-bottom)); transform: translateX(-50%);
+  display: flex; align-items: center; gap: 16px; max-width: calc(100vw - 32px); padding: 8px 8px 8px 18px; border-radius: 16px;
+  background: var(--forest); color: var(--ivory); font-size: 15px; box-shadow: 0 16px 32px -14px rgba(11, 39, 31, .7);
+  animation: ck-rise .18s ease-out;
+}
+.ck-toast span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ck-toast button { flex: none; height: 40px; padding: 0 16px; border: 0; border-radius: 11px; background: var(--ivory); color: var(--forest); font-weight: 700; font-size: 15px; }
+@keyframes ck-rise { from { opacity: 0; transform: translate(-50%, 8px); } }
+
 /* New-timer dialog (lives on <body>, outside .cook) */
 .ck-dlg input[type="text"], .ck-dur input {
   border-radius: 14px; border: 1px solid var(--edge); padding: 10px 12px; font-size: 17px; background: #FFFFFF; color: var(--ink);
@@ -179,6 +189,7 @@
 
 @media (max-width: 599px) {
   .ck-tog .lbl { display: none; }
+  .ck-act .btn { flex: 1 1 auto; }
 }
 @media (max-width: 899px) {
   .cook { height: auto; min-height: 100vh; overflow: visible; }
@@ -207,11 +218,12 @@
     padding: 10px 10px calc(10px + env(safe-area-inset-bottom)); border-left: 0; border-top: 1px solid var(--rule);
   }
   .ck-tmr { flex: 0 0 240px; }
+  .ck-toast { bottom: calc(118px + env(safe-area-inset-bottom)); }
   .ck-timers .ck-new { order: -1; align-self: stretch; }
 }
 @media (min-width: 900px) {
   .ck-scrim { display: none; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .ck-tmr.ring { animation: none; }
+  .ck-tmr.ring, .ck-toast { animation: none; }
 }

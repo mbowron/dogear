@@ -15,6 +15,7 @@ import { navigate } from "../app.js";
 
 const SESSION_VERSION = 2;
 const DUE_SOON_MS = 30 * 1000;
+const UNDO_MS = 8 * 1000;
 const STALE_MS = 12 * 3600 * 1000;
 const PANEL_KEY = "dogear.cook.ingredients";
 const SVG_NS = "http://www.w3.org/2000/svg";
@@ -100,7 +101,8 @@ export async function mount(root, [slug], query) {
     if (t) set(s, { status: "running", startedAt: Date.now(), endsAt: Date.now() + t * 1000 });
     else set(s, { status: "done", doneAt: Date.now() });
   }
-  const done = (s) => set(s, { status: "done", doneAt: Date.now() });
+  const done = (s) => undoable(`${shortName(s.lead)}: done`, () => set(s, { status: "done", doneAt: Date.now() }));
+  const cancel = (s) => undoable(`${shortName(s.lead)}: timer canceled`, () => undo(s));
   function undo(s) {
     const a = st(s).alt;
     session.steps[s.id] = a != null ? { status: "pending", alt: a } : { status: "pending" };
@@ -131,8 +133,35 @@ export async function mount(root, [slug], query) {
     commit();
   }
   function removeTimer(id) {
-    session.timers = session.timers.filter((x) => x.id !== id);
-    commit();
+    const x = timerById(id);
+    undoable(`${x ? x.name : "Timer"}: ${x && x.endsAt <= now() ? "done" : "canceled"}`, () => {
+      session.timers = session.timers.filter((t) => t.id !== id);
+      commit();
+    });
+  }
+
+  // -- undo: every Done, Cancel and Stop can be taken back for a few seconds ----
+  let toast = null;
+  function undoable(text, change) {
+    const before = JSON.stringify({ steps: session.steps, timers: session.timers });
+    change();
+    const mine = {
+      text,
+      restore: () => {
+        Object.assign(session, JSON.parse(before));
+        toast = null;
+        commit();
+      },
+    };
+    toast = mine;
+    render();
+    setTimeout(() => { if (toast === mine) { toast = null; render(); } }, UNDO_MS);
+  }
+  function toastBar() {
+    if (!toast) return null;
+    return h("div", { class: "ck-toast", role: "status" },
+      h("span", {}, toast.text),
+      h("button", { type: "button", onclick: toast.restore }, "Undo"));
   }
 
   // -- what is happening ------------------------------------------------------
@@ -183,7 +212,8 @@ export async function mount(root, [slug], query) {
         ingPanel,
         panelOpen ? h("div", { class: "ck-scrim", onclick: () => togglePanel(false) }) : null,
         stepList(cur),
-        timersPanel(cur)));
+        timersPanel(cur)),
+      toastBar());
     tick(true);
     const id = cur ? cur.step.id : "plate";
     if (id !== lastCurrent) {
@@ -346,11 +376,11 @@ export async function mount(root, [slug], query) {
       .filter((s) => st(s).status === "running" && st(s).endsAt)
       .map((s) => ({
         key: s.id, name: s.lead.replace(/\.$/, ""), color: s.dish.color.c, ...pick(st(s)),
-        more: () => addMinute(s), end: () => done(s), endLabel: "Done", ringing: isRinging(s),
+        more: () => addMinute(s), finish: () => done(s), cancel: () => cancel(s), ringing: isRinging(s),
       }));
     const mine = session.timers.map((x) => ({
       key: x.id, name: x.name, color: "#173E32", ...pick(x),
-      more: () => extendTimer(x.id), end: () => removeTimer(x.id), endLabel: "Stop", ringing: x.endsAt <= now(),
+      more: () => extendTimer(x.id), finish: () => removeTimer(x.id), cancel: () => removeTimer(x.id), ringing: x.endsAt <= now(),
     }));
     const all = [...fromSteps, ...mine].sort((a, b) => a.endsAt - b.endsAt);
     return h("aside", { class: "ck-timers ck-scroll", "aria-label": "Timers" },
@@ -368,9 +398,9 @@ export async function mount(root, [slug], query) {
         h("div", { class: "sub num" }, `Ends ${clock(new Date(t.endsAt))}`)),
       h("div", { class: "acts" },
         h("button", { type: "button", onclick: t.more }, "+1 min"),
-        t.ringing || t.endLabel === "Stop"
-          ? h("button", { type: "button", class: t.ringing ? "solid" : "", onclick: t.end }, t.ringing ? "Done" : t.endLabel)
-          : null));
+        t.ringing
+          ? h("button", { type: "button", class: "solid", onclick: t.finish }, "Done")
+          : h("button", { type: "button", onclick: t.cancel }, "Cancel")));
   }
 
   function timerDialog() {

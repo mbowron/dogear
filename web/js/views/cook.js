@@ -20,6 +20,8 @@ const PANEL_KEY = "dogear.cook.ingredients";
 const SVG_NS = "http://www.w3.org/2000/svg";
 
 // Each dish in a cook owns one color, used everywhere that dish appears.
+const TIMER_PRESETS = [1, 3, 5, 10, 15, 20, 30, 45];
+
 const DISH_COLORS = [
   { c: "#C95F40", ink: "#FFFFFF" },   // terracotta
   { c: "#E9AA42", ink: "#1A1D19" },   // mustard
@@ -52,6 +54,7 @@ export async function mount(root, [slug], query) {
     session = { v: SESSION_VERSION, slug, plate: plan.plate.getTime(), servings: data.view.servings, steps: {}, have: {} };
   }
   session.have = session.have || {};
+  session.timers = session.timers || [];
   const save = () => { try { localStorage.setItem(sessionKey(slug), JSON.stringify(session)); } catch { /* full */ } };
   save();
   history.replaceState(null, "", `/cook/${slug}`);
@@ -105,14 +108,34 @@ export async function mount(root, [slug], query) {
   const useAlt = (s, i) => set(s, { alt: st(s).alt === i ? null : i });
   function commit() {
     save();
-    if (!ringingSteps().length) silence();
+    if (!anyRinging()) silence();
     render();
+  }
+
+  // -- your own timers (not tied to a step) --------------------------------------
+  function addTimer(name, seconds) {
+    unlock();
+    const t = Date.now();
+    session.timers.push({ id: `t${t}`, name, startedAt: t, endsAt: t + seconds * 1000 });
+    commit();
+  }
+  const timerById = (id) => session.timers.find((x) => x.id === id);
+  function extendTimer(id) {
+    const x = timerById(id);
+    if (x) x.endsAt = Math.max(x.endsAt, Date.now()) + MIN * 1000;
+    commit();
+  }
+  function removeTimer(id) {
+    session.timers = session.timers.filter((x) => x.id !== id);
+    commit();
   }
 
   // -- what is happening ------------------------------------------------------
   const now = () => Date.now();
   const isRinging = (s) => st(s).status === "running" && st(s).endsAt && st(s).endsAt <= now();
   const ringingSteps = () => steps.filter(isRinging);
+  const ringingTimers = () => session.timers.filter((x) => x.endsAt <= now());
+  const anyRinging = () => ringingSteps().length > 0 || ringingTimers().length > 0;
 
   /** The one step that needs you most, and why. */
   function current() {
@@ -140,7 +163,8 @@ export async function mount(root, [slug], query) {
   function sig() {
     const cur = current();
     const late = lateMs() > MIN * 1000 ? Math.floor(lateMs() / MIN / 1000) : 0;
-    return [cur && cur.step.id, cur && cur.kind, ringingSteps().map((s) => s.id).join(","), late].join("|");
+    const ringing = [...ringingSteps().map((s) => s.id), ...ringingTimers().map((x) => x.id)];
+    return [cur && cur.step.id, cur && cur.kind, ringing.join(","), late].join("|");
   }
 
   function render() {
@@ -311,23 +335,76 @@ export async function mount(root, [slug], query) {
   }
 
   function timersPanel(cur) {
-    const running = steps.filter((s) => st(s).status === "running" && st(s).endsAt && !(cur && cur.step === s));
-    return h("aside", { class: `ck-timers ck-scroll${running.length ? "" : " none"}`, "aria-label": "Timers" },
-      running.length ? running.map(timerTile) : h("div", { class: "empty" }, "No timers running"));
+    const fromSteps = steps
+      .filter((s) => st(s).status === "running" && st(s).endsAt && !(cur && cur.step === s))
+      .map((s) => ({
+        key: s.id, name: s.lead.replace(/\.$/, ""), color: s.dish.color.c, ...pick(st(s)),
+        more: () => addMinute(s), end: () => done(s), endLabel: "Done", ringing: isRinging(s),
+      }));
+    const mine = session.timers.map((x) => ({
+      key: x.id, name: x.name, color: "#173E32", ...pick(x),
+      more: () => extendTimer(x.id), end: () => removeTimer(x.id), endLabel: "Stop", ringing: x.endsAt <= now(),
+    }));
+    const all = [...fromSteps, ...mine].sort((a, b) => a.endsAt - b.endsAt);
+    return h("aside", { class: "ck-timers ck-scroll", "aria-label": "Timers" },
+      all.map(timerTile),
+      h("button", { type: "button", class: "ck-new", onclick: timerDialog }, icon("plus", 18, { stroke: 2.4 }), "Timer"));
+  }
+  const pick = ({ startedAt, endsAt }) => ({ startedAt, endsAt });
+
+  function timerTile(t) {
+    return h("div", { class: `ck-tmr${t.ringing ? " ring" : ""}` },
+      ringSvg(t.color, t.startedAt, t.endsAt),
+      h("div", { class: "info" },
+        h("div", { class: "name" }, t.name),
+        h("div", { class: "left num", dataset: { end: t.endsAt, done: "Time’s up" } }, t.ringing ? "Time’s up" : countdown((t.endsAt - now()) / 1000)),
+        h("div", { class: "sub num" }, `Ends ${clock(new Date(t.endsAt))}`)),
+      h("div", { class: "acts" },
+        h("button", { type: "button", onclick: t.more }, "+1 min"),
+        t.ringing || t.endLabel === "Stop"
+          ? h("button", { type: "button", class: t.ringing ? "solid" : "", onclick: t.end }, t.ringing ? "Done" : t.endLabel)
+          : null));
   }
 
-  function timerTile(s) {
-    const state = st(s);
-    const ringingNow = isRinging(s);
-    return h("div", { class: `ck-tmr${ringingNow ? " ring" : ""}`, style: { "--dish": s.dish.color.c } },
-      ringSvg(s.dish.color.c, state.startedAt, state.endsAt),
-      h("div", { class: "info" },
-        h("div", { class: "name" }, s.lead.replace(/\.$/, "")),
-        h("div", { class: "left num", dataset: { end: state.endsAt, done: "Time’s up" } }, ringingNow ? "Time’s up" : countdown((state.endsAt - now()) / 1000)),
-        h("div", { class: "sub num" }, `Ends ${clock(new Date(state.endsAt))}`)),
-      h("div", { class: "acts" },
-        h("button", { type: "button", onclick: () => addMinute(s) }, "+1 min"),
-        ringingNow ? h("button", { type: "button", class: "solid", onclick: () => done(s) }, "Done") : null));
+  function timerDialog() {
+    let minutes = 5;
+    const name = h("input", { id: "tmr-name", type: "text", placeholder: "Name", autocomplete: "off", enterkeyhint: "go" });
+    const minIn = h("input", { id: "tmr-min", type: "number", inputmode: "numeric", min: 0, max: 600, value: minutes, "aria-label": "Minutes" });
+    const secIn = h("input", { id: "tmr-sec", type: "number", inputmode: "numeric", min: 0, max: 59, value: 0, "aria-label": "Seconds" });
+    const presets = TIMER_PRESETS.map((m) => h("button", {
+      type: "button", "aria-pressed": String(m === minutes),
+      onclick: () => { minIn.value = m; secIn.value = 0; syncPresets(); },
+    }, `${m}`));
+    function syncPresets() {
+      const m = Number(minIn.value), sec = Number(secIn.value) || 0;
+      TIMER_PRESETS.forEach((p, i) => presets[i].setAttribute("aria-pressed", String(!sec && p === m)));
+    }
+    minIn.addEventListener("input", syncPresets);
+    secIn.addEventListener("input", syncPresets);
+
+    const close = () => { document.removeEventListener("keydown", onKey); backdrop.remove(); };
+    const onKey = (e) => { if (e.key === "Escape") close(); };
+    document.addEventListener("keydown", onKey);
+    const backdrop = h("div", { class: "dialog-backdrop", onclick: (e) => { if (e.target === backdrop) close(); } },
+      h("form", {
+        class: "dialog ck-dlg", role: "dialog", "aria-modal": "true", "aria-labelledby": "tmr-h",
+        onsubmit: (e) => {
+          e.preventDefault();
+          const secs = Math.max(0, Number(minIn.value) || 0) * MIN + Math.max(0, Math.min(59, Number(secIn.value) || 0));
+          if (!secs) { minIn.focus(); return; }
+          addTimer(name.value.trim() || `${human(secs)} timer`, secs);
+          close();
+        },
+      },
+        h("h2", { id: "tmr-h" }, "New timer"),
+        h("label", { for: "tmr-name", class: "sr-only" }, "Name"), name,
+        h("div", { class: "ck-presets", role: "group", "aria-label": "Minutes" }, presets),
+        h("div", { class: "ck-dur num" }, minIn, h("span", {}, "min"), secIn, h("span", {}, "sec")),
+        h("div", { class: "row" },
+          h("button", { type: "button", class: "btn btn-sec", onclick: close }, "Cancel"),
+          h("button", { type: "submit", class: "btn btn-pri" }, "Start"))));
+    document.body.append(backdrop);
+    name.focus();
   }
 
   function finishRow() {
@@ -363,8 +440,8 @@ export async function mount(root, [slug], query) {
       for (const el of needle.children) el.style.left = left;
       needle.lastChild.textContent = clock(new Date(t), { ampm: false });
     }
-    const ringingNow = ringingSteps();
-    if (ringingNow.length) ring(ringingNow.map((s) => s.lead).join(" · "));
+    const ringingNow = [...ringingSteps().map((s) => s.lead), ...ringingTimers().map((x) => x.name)];
+    if (ringingNow.length) ring(ringingNow.join(" · "));
   }
 
   // -- panel, finishing ------------------------------------------------------------

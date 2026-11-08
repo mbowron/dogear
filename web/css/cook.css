@@ -133,7 +133,11 @@
 .ck-plate-row .serif { font-size: 22px; }
 
 .ck-timers { flex: 0 0 250px; background: var(--whitewarm); border-left: 1px solid var(--rule); padding: 14px; display: flex; flex-direction: column; gap: 12px; }
-.ck-timers .empty { padding: 8px 4px; font-size: 15px; color: var(--quiet); }
+.ck-new {
+  flex: none; display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 48px; padding: 0 16px;
+  border: 0; border-radius: 14px; background: var(--oat); color: var(--forest); font-weight: 650; font-size: 15px;
+}
+.ck-new:hover { background: #E9E0CF; }
 .ck-tmr {
   display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; padding: 14px; border-radius: 18px;
   background: #FFFFFF; border: 1px solid var(--rule); box-shadow: 0 6px 16px -14px rgba(36, 41, 35, .45);
@@ -149,6 +153,21 @@
 .ck-tmr.ring .left { font-size: 22px; }
 .ck-tmr.ring { border-color: var(--sage); box-shadow: 0 0 0 2px var(--sage); animation: ck-pulse 1.2s ease-in-out infinite; }
 @keyframes ck-pulse { 50% { box-shadow: 0 0 0 6px rgba(82, 107, 86, .35); } }
+
+/* New-timer dialog (lives on <body>, outside .cook) */
+.ck-dlg input[type="text"], .ck-dur input {
+  border-radius: 14px; border: 1px solid var(--edge); padding: 10px 12px; font-size: 17px; background: #FFFFFF; color: var(--ink);
+}
+.ck-dlg input[type="text"] { width: 100%; }
+.ck-presets { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+.ck-presets button {
+  height: 48px; border-radius: 12px; border: 1px solid var(--edge); background: #FFFFFF; color: var(--forest);
+  font-size: 17px; font-weight: 650; font-variant-numeric: tabular-nums;
+}
+.ck-presets button[aria-pressed="true"] { background: var(--forest); border-color: var(--forest); color: var(--paper); }
+.ck-dur { display: flex; align-items: center; gap: 8px; font-size: 15px; color: var(--ink); font-variant-numeric: tabular-nums; }
+.ck-dur input { width: 84px; text-align: center; }
+.ck-dur span + input { margin-left: 8px; }
 
 /* ---------- Narrow screens: phone and iPad portrait ---------- */
 
@@ -181,8 +200,8 @@
     position: sticky; bottom: 0; z-index: 4; flex-direction: row; overflow-x: auto; gap: 10px;
     padding: 10px 10px calc(10px + env(safe-area-inset-bottom)); border-left: 0; border-top: 1px solid var(--rule);
   }
-  .ck-timers:empty, .ck-timers.none { display: none; }
   .ck-tmr { flex: 0 0 240px; }
+  .ck-timers .ck-new { order: -1; align-self: stretch; }
 }
 @media (min-width: 900px) {
   .ck-scrim { display: none; }

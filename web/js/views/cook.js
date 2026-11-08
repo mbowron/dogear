@@ -87,6 +87,11 @@ export async function mount(root, [slug], query) {
   const needsTimer = (s) => Boolean(timerOf(s)) && (s.mode !== "active" || timerOf(s) >= 120);
   const appOf = (s) => applianceLabel(alt(s) ? alt(s).appliance : s.appliance);
   const durOf = (s) => (alt(s) ? durationLabel(alt(s)) : durationLabel(s));
+  /** "Start 8 Minute Timer" (a range starts at its low end). */
+  const startLabel = (s) => {
+    const secs = timerOf(s);
+    return secs < MIN ? `Start ${secs} Second Timer` : `Start ${Math.round(secs / MIN)} Minute Timer`;
+  };
   const set = (s, patch) => { session.steps[s.id] = { ...st(s), ...patch }; commit(); };
 
   function start(s) {
@@ -299,7 +304,7 @@ export async function mount(root, [slug], query) {
           !isCur && state.status === "running" && state.endsAt ? h("span", { class: "ck-run num" }, `Until ${clock(new Date(state.endsAt))}`) : null),
         h("div", { class: "txt" }, h("span", { class: "lead" }, inline(s.lead)), s.body ? " " : null, inline(s.body)),
         !isCur && state.status === "pending" && needsTimer(s)
-          ? h("button", { type: "button", class: "ck-go", onclick: () => start(s) }, icon("play", 14), "Start timer")
+          ? h("button", { type: "button", class: "ck-go", onclick: () => start(s) }, icon("play", 14), startLabel(s))
           : null,
         isCur && state.status === "pending" ? s.fallbacks.map((f, i) => h("div", { class: "alt" }, icon("swap", 16),
           state.alt === i
@@ -328,7 +333,7 @@ export async function mount(root, [slug], query) {
         small = `Starts at ${clock(s.start)}`;
       }
       // Timers count down only in the timers column.
-      label = timed ? "Start timer" : "Done";
+      label = timed ? startLabel(s) : "Done";
       act = () => start(s);
     }
     return h("div", { class: "ck-act" },

@@ -111,6 +111,12 @@
 .ck-step .alt { margin-top: 8px; font-size: 14px; color: var(--quiet); display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .ck-step .alt .linkbtn { min-height: 32px; font-size: 14px; }
 .ck-step.done .when, .ck-step.done .meta, .ck-step.done .txt { opacity: .55; }
+.ck-run { padding: 2px 8px; border-radius: 8px; background: var(--forest); color: var(--ivory); }
+.ck-go {
+  display: inline-flex; align-items: center; gap: 7px; height: 38px; margin-top: 10px; padding: 0 14px;
+  border: 1px solid var(--rule); border-radius: 12px; background: var(--whitewarm); color: var(--forest); font-size: 14px; font-weight: 650;
+}
+.ck-go:hover { border-color: var(--sage); }
 .ck-step.group-head { padding: 12px 16px 0 60px; font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--quiet); font-weight: 700; }
 .ck-step.cur {
   background: var(--whitewarm); padding: 22px 22px 20px 26px;

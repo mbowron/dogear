@@ -295,8 +295,12 @@ export async function mount(root, [slug], query) {
         h("div", { class: "meta" },
           isCur ? h("span", { class: "ck-now" }, cur.kind === "next" ? "Next" : "Now") : null,
           dishes.length > 1 ? h("span", { class: "dot" }) : null,
-          meta),
+          meta,
+          !isCur && state.status === "running" && state.endsAt ? h("span", { class: "ck-run num" }, `Until ${clock(new Date(state.endsAt))}`) : null),
         h("div", { class: "txt" }, h("span", { class: "lead" }, inline(s.lead)), s.body ? " " : null, inline(s.body)),
+        !isCur && state.status === "pending" && needsTimer(s)
+          ? h("button", { type: "button", class: "ck-go", onclick: () => start(s) }, icon("play", 14), "Start timer")
+          : null,
         isCur && state.status === "pending" ? s.fallbacks.map((f, i) => h("div", { class: "alt" }, icon("swap", 16),
           state.alt === i
             ? [`Using ${applianceLabel(f.appliance)}`, h("button", { type: "button", class: "linkbtn", onclick: () => useAlt(s, i) }, `Back to ${applianceLabel(s.appliance)}`)]
@@ -322,11 +326,9 @@ export async function mount(root, [slug], query) {
       if (cur.kind === "next") {
         big = h("span", { dataset: { until: s.start.getTime() } }, until(Math.max(0, (s.start - now()) / 1000)));
         small = `Starts at ${clock(s.start)}`;
-      } else {
-        big = timed ? countdown(timerOf(s)) : "";
-        small = timed ? `${s.mode === "active" ? "Timer" : "Runs on its own"} once you start` : "";
       }
-      label = timed ? "Start" : "Done";
+      // Timers count down only in the timers column.
+      label = timed ? "Start timer" : "Done";
       act = () => start(s);
     }
     return h("div", { class: "ck-act" },

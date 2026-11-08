@@ -315,8 +315,8 @@ export async function mount(root, [slug], query) {
     if (cur.kind === "ring") {
       big = "Time’s up"; small = `${s.lead.replace(/\.$/, "")} is done`; label = "Done"; act = () => done(s);
     } else if (cur.kind === "active") {
-      big = h("span", { dataset: { end: state.endsAt, suffix: " left" } }, `${countdown((state.endsAt - now()) / 1000)} left`);
-      small = `Done by ${clock(new Date(state.endsAt))}`; label = "Done"; act = () => done(s);
+      // The countdown lives in the timers column with every other timer.
+      small = `Until ${clock(new Date(state.endsAt))}`; label = "Done"; act = () => done(s);
     } else {
       const timed = needsTimer(s);
       if (cur.kind === "next") {
@@ -336,7 +336,7 @@ export async function mount(root, [slug], query) {
 
   function timersPanel(cur) {
     const fromSteps = steps
-      .filter((s) => st(s).status === "running" && st(s).endsAt && !(cur && cur.step === s))
+      .filter((s) => st(s).status === "running" && st(s).endsAt)
       .map((s) => ({
         key: s.id, name: s.lead.replace(/\.$/, ""), color: s.dish.color.c, ...pick(st(s)),
         more: () => addMinute(s), end: () => done(s), endLabel: "Done", ringing: isRinging(s),
